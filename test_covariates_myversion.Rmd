@@ -1,0 +1,156 @@
+Methods used to choose the covariates in the generalised linear model of cholera.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r libraries}
+library(KsetupR)
+library(dplyr)
+library(magrittr)
+library(corrplot)
+library(ggplot2)
+library(tidyr)
+library(caret)
+library(MASS)
+library(bestglm)
+```
+
+We begin by loading the data `dat` which consists of the outcome variable `cases_or_outbreaks` and all the environmental data for each admin one unit.
+
+
+```{r load_data}
+library(readxl)
+dat <- read_excel("Multivariate_model_data.xlsx", sheet = "Sheet2")
+# remove missing entries and year/country column
+dat$Year <- NULL
+dat$Country <- NULL
+dat <- na.omit(dat)
+```
+
+We may then begin choosing the covariates. First we fetch the list of all covariates.
+
+```{r covar_to_test}
+#get full list of covariates
+covar_to_test <- names(dat)[1:(ncol(dat))]
+#remove those that will be included anyway/ not relevant
+covar_to_test <- covar_to_test[grep("Code", covar_to_test, invert = TRUE)]
+
+as.data.frame(covar_to_test)
+```
+Now we remove those covariates that are not significantly associated with the data. This is done through fitting univariate models and examining the pvalues.
+
+```{r fit_univariate}
+mod <- list()
+pvalues <- rep(NA, length(covar_to_test))
+coeffs <- rep(NA, length(covar_to_test))
+BICs <- rep(NA, length(covar_to_test))
+for(i in 1:length(covar_to_test)){
+  mod[[i]] <- glm( paste0("Outbreak~",covar_to_test[i]), 
+           data = dataset1, family=binomial(link="cloglog"))
+  
+  pvalues[i] <- coef(summary(mod[[i]]))[,4]
+  coeffs[i] <- coef(summary(mod[[i]]))[,1]
+  BICs[i] <- BIC(mod[[i]])
+}
+df <-  data.frame(covariate = covar_to_test, 
+                        pvalue = pvalues, 
+                        coeff = coeffs,
+                        BIC = BICs) %>% 
+               arrange(-pvalues)
+df
+df %<>% filter(pvalue < 0.1)
+covar_to_test = as.character(df$covariate)
+```
+
+We examine covariates that are highly correlated.
+
+```{r remove_cor, fig.height=12, fig.width=12, fig.cap="Heatmap of parameter correlatons."}
+reduced_dat <-  dataset1[, covar_to_test]
+reduced_dat_cor <-  cor(reduced_dat)
+heatmap(reduced_dat_cor, keep.dendro = TRUE)
+cor_df <- as.data.frame(reduced_dat_cor) 
+cor_df$param1 <- rownames(cor_df)
+cor_df %<>% gather(param2, correlation, -param1)
+```
+
+\FloatBarrier
+
+We find that some covariates are highly correlated. As such, we group these into clusters where the absolute piecewise correlation is above 0.75.
+
+```{r clusters, fig.height=12, fig.width=10}
+x <- as.dist( 1-abs(cor(na.omit(dataset1[, na.omit(covar_to_test)]))))
+out <- hclust(x)
+df <-  data.frame(param1 = unique(cor_df$param1))
+i = length(covar_to_test)
+pairwise_cor = 1
+while(i >1 & pairwise_cor>0.75){ #if I get lots of similar covariates coming out as important change this threshold 
+  i <- i-1
+  
+  y <- cutree(out, k = i)
+  
+  tmp = data.frame(param1 = names(y), as.numeric(y))
+  names(tmp)[2] = paste0("cluster", i)
+  
+  df %<>% left_join(tmp)
+  
+  
+  for(c in unique(y)){
+    cluster_parm = df$param1[df[,paste0("cluster", i)] == c]
+    if(length(cluster_parm)>1){
+      out_cor = cor(as.matrix(dataset1[, as.character(cluster_parm)]))
+      pairwise_cor = min(min(out_cor[out_cor<1]), pairwise_cor)
+    }
+  }
+  
+}
+# final is i-1
+df_out = df[, c(1, (ncol(df)-1))]
+names(df_out)[2] = "cluster"
+df_out %>% arrange(cluster)
+```
+
+In order to reduce the number of covariates to test, we may choose those covariates in each cluster that are most correlated with our outcome variable. 
+
+```{r cor with cas}
+df_out %<>% mutate(cor_with_case = NA)
+for(i in 1:nrow(df_out)){
+  df_out$cor_with_case[i] = abs(cor(dataset1[, c("Outbreak", 
+                                            as.character(df_out$param1[i]))])[1,2])
+}
+df_covar <-  df_out %>% 
+  group_by(cluster) %>% 
+  arrange(-cor_with_case) %>% 
+  summarise(param1 = first(param1))
+covar_to_test = as.character(df_covar$param1)
+```
+
+We use the `stepAIC` function from the `MASS` package to step through model possibilities. This uses BIC as a criteria to assess the inclusion of each model covariate.
+
+```{r stepAIC}
+dat_subs <-  dataset1[, c("Outbreak" ,covar_to_test)] # subset 
+#use stepAIC to get list of important covariates
+alt_mod <-  MASS::stepAIC(glm("Outbreak~.", data = dat_subs, 
+                            family=binomial(link="cloglog")), 
+                        trace = FALSE,
+                        k = log(nrow(dat_subs))) #turning into BIC
+summary(alt_mod)
+# remove those that are not significant
+pvalues <- coef(summary(alt_mod))[,4]
+parm_out <- names(head(sort(pvalues), 16)) #get 15 most significant
+parm_out <- parm_out[grep("(Intercept)", parm_out, invert = T)] # remove intercept
+as.data.frame(parm_out)
+```
+
+Finally, we use the `bestglm` function from `bestglm` to find the top 20 models from this subset of covariates. This uses the complete enumeration algorithm.
+
+```{r bestglm, eval = T}
+dat_subs = as.data.frame(dataset1[, c(as.matrix(parm_out), "Outbreak")])
+out = bestglm(Xy = dat_subs, 
+        family = binomial(link="cloglog"),
+        #nvmax = 5,
+        TopModels = 20)
+out$BestModel
+write.csv(out$BestModels, "bestglm_A.csv", row.names = FALSE)
+```
