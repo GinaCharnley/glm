@@ -1,0 +1,92 @@
+# GLM with drought index and outbreak occurance for each country and year 
+
+data2 <- data.frame(year = years, occurrence = (1 or 0 for each country), drought index)
+
+data2$Outbreak <- as.factor(data2$Outbreak)
+is.factor(data2$Outbreak)
+[1] TRUE
+
+glm1 <- glm(Outbreak~mean_drought_national, data = data2, family = binomial)
+summary(glm1)
+Call:
+glm(formula = Outbreak ~ mean_drought_national, family = binomial, 
+    data = data2)
+
+Deviance Residuals: 
+    Min       1Q   Median       3Q      Max  
+-3.0013   0.2086   0.2398   0.2670   0.4308  
+
+Coefficients:
+                      Estimate Std. Error z value Pr(>|z|)    
+(Intercept)            3.27256    0.08228  39.774  < 2e-16 ***
+mean_drought_national -0.29052    0.05951  -4.882 1.05e-06 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for binomial family taken to be 1)
+
+    Null deviance: 1544.5  on 5723  degrees of freedom
+Residual deviance: 1520.1  on 5722  degrees of freedom
+AIC: 1524.1
+
+Number of Fisher Scoring iterations: 6
+
+test <- data.frame(mean_drought_national = -0.4)
+predict(glm1,test,type = "response")
+        1 
+0.9673517 
+
+range(data2$mean_drought_national)
+[1] -6.657091  3.241479
+xDI <- seq(-7, 3.5, 0.2)
+yDI <- predict(glm1, list(mean_drought_national = xDI), type="response")
+plot(data2$mean_drought_national, data2$Outbreak, pch = 16, xlab = "Mean National DI", ylab = "Outbreak Occurance") 
++ lines(xDI, yDI)
+integer(0) # it plots its fine, but also gives me this integer(0) output, which is think is the source of my error. 
+# the plot I get is shown in GLM1.pdf
+# I understand what the plot is showing and I see why the line is doing that, what I dont understand is why my plotted data has 
+# gone from 1-2 but my curve has done the correct option and gone from 0-1. 
+
+# so I tried it again, just with data from 1996
+# I chose that year because there was a good mix of outbreak occurance 
+data1996 <- subset(data2, year=="1996")
+
+glm1996 <- glm(Outbreak~mean_drought_national, data = data1996, family = binomial)
+summary(glm1996)
+Call:
+glm(formula = Outbreak ~ mean_drought_national, family = binomial, 
+    data = data1996)
+
+Deviance Residuals: 
+    Min       1Q   Median       3Q      Max  
+-2.7856   0.1421   0.2146   0.3421   0.8016  
+
+Coefficients:
+                      Estimate Std. Error z value Pr(>|z|)    
+(Intercept)             1.1858     0.4086   2.902   0.0037 ** 
+mean_drought_national  -1.8476     0.4688  -3.941 8.12e-05 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for binomial family taken to be 1)
+
+    Null deviance: 79.983  on 158  degrees of freedom
+Residual deviance: 60.534  on 157  degrees of freedom
+AIC: 64.534
+
+Number of Fisher Scoring iterations: 6
+
+test1996 <- data.frame(mean_drought_national = -2)
+predict(glm1996,test1996,type = "response")
+        1 
+0.9924672 
+
+range(data1996$mean_drought_national)
+[1] -2.6342791  0.8479956
+xDI1996 <- seq(-3, 1, 0.1)
+yDI1996 <- predict(glm1996, list(mean_drought_national = xDI1996), type="response")
+
+plot(data1996$mean_drought_national, data1996$Outbreak, pch = 16, xlab = "Mean National DI 1996", ylab = "Outbreak Occurance 1996") 
++ lines(xDI1996, yDI1996)
+
+# still got the same issue, and the plot is shown in GLM2.pdf 
