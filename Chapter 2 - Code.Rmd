@@ -1,0 +1,199 @@
+---
+title: "Using generalised linear models to explore the relationship between drought and epidemic cholera in Africa"
+author: "G. Charnley"
+date: "22/10/2020"
+output: pdf_document
+---
+Covariate selection process 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r libraries}
+library(dplyr)
+library(magrittr)
+library(corrplot)
+library(ggplot2)
+library(tidyr)
+library(caret)
+library(MASS)
+```
+
+Load the data `data` which consists of the outcome variable `outbreak occurance` and all the other covariates to test. 
+
+```{r load_data}
+library(readxl)
+data <- read_excel("Multivariate_model_data.xlsx", sheet = "Sheet2")
+# remove missing entries and year/country column
+data$Year <- NULL
+data$Code <- NULL
+data <- na.omit(data)
+```
+
+Fetch the list of all covariates.
+
+```{r covar_to_test}
+#get full list of covariates
+covar_to_test <- names(data)[2:(ncol(data))]
+
+as.data.frame(covar_to_test)
+```
+
+Remove those covariates that are not significantly associated with the data, through fitting univariate models and examining the p-values.
+
+```{r fit_univariate}
+mod <- list()
+pvalues <- rep(NA, length(covar_to_test))
+coeffs <- rep(NA, length(covar_to_test))
+BICs <- rep(NA, length(covar_to_test))
+for(i in 1:length(covar_to_test)){
+  mod[[i]] <- glm( paste0("Outbreak~",covar_to_test[i]), 
+           data = data, family=binomial(link="cloglog"))
+  
+  pvalues[i] <- coef(summary(mod[[i]]))[,4]
+  coeffs[i] <- coef(summary(mod[[i]]))[,1]
+  BICs[i] <- BIC(mod[[i]])
+}
+df <-  data.frame(covariate = covar_to_test, 
+                        pvalue = pvalues, 
+                        coeff = coeffs,
+                        BIC = BICs) %>% 
+               arrange(-pvalues)
+df
+df %<>% filter(pvalue < 0.1)
+covar_to_test = as.character(df$covariate)
+```
+
+Examine the covariates that are highly correlated.
+
+```{r remove_cor, fig.height=12, fig.width=12, fig.cap="Heatmap of parameter correlatons."}
+reduced_dat <-  data[, covar_to_test]
+reduced_dat_cor <-  cor(reduced_dat)
+heatmap(reduced_dat_cor, keep.dendro = TRUE)
+cor_df <- as.data.frame(reduced_dat_cor) 
+cor_df$param1 <- rownames(cor_df)
+cor_df %<>% gather(param2, correlation, -param1)
+```
+
+Group highly correlated covaraites into clusters where the absolute piecewise correlation is above 0.75.
+
+```{r clusters, fig.height=12, fig.width=10}
+x <- as.dist( 1-abs(cor(na.omit(data[, na.omit(covar_to_test)]))))
+out <- hclust(x)
+df <-  data.frame(param1 = unique(cor_df$param1))
+i = length(covar_to_test)
+pairwise_cor = 1
+while(i >1 & pairwise_cor>0.75){  
+  i <- i-1
+  
+  y <- cutree(out, k = i)
+  
+  tmp = data.frame(param1 = names(y), as.numeric(y))
+  names(tmp)[2] = paste0("cluster", i)
+  
+  df %<>% left_join(tmp)
+  
+  
+  for(c in unique(y)){
+    cluster_parm = df$param1[df[,paste0("cluster", i)] == c]
+    if(length(cluster_parm)>1){
+      out_cor = cor(as.matrix(data[, as.character(cluster_parm)]))
+      pairwise_cor = min(min(out_cor[out_cor<1]), pairwise_cor)
+    }
+  }
+  
+}
+# final is i-1
+df_out = df
+names(df_out)[2] = "cluster"
+df_out %>% arrange(cluster)
+```
+
+Choose the covariates in each cluster that are most correlated with the outcome variable. 
+
+```{r cor with cas}
+df_out %<>% mutate(cor_with_case = NA)
+for(i in 1:nrow(df_out)){
+  df_out$cor_with_case[i] = abs(cor(data[, c("Outbreak", 
+                                            as.character(df_out$param1[i]))])[1,2])
+}
+df_covar <-  df_out %>% 
+  group_by(cluster) %>% 
+  arrange(-cor_with_case) %>% 
+  summarise(param1 = first(param1))
+covar_to_test = as.character(df_covar$param1)
+```
+
+Use the `stepAIC` function from the `MASS` package to step through model possibilities, using BIC as a criteria to assess the inclusion of each model covariate.
+
+```{r stepAIC}
+dat_subs <-  data[, c("Outbreak" ,covar_to_test)] # subset 
+#use stepAIC to get list of important covariates
+alt_mod <-  MASS::stepAIC(glm("Outbreak~.", data = dat_subs, 
+                            family=binomial(link="cloglog")), 
+                        trace = FALSE,
+                        k = log(nrow(dat_subs))) #turning into BIC
+summary(alt_mod)
+# remove those that are not significant
+pvalues <- coef(summary(alt_mod))[,4]
+parm_out <- names(head(sort(pvalues), 16)) #get 15 most significant
+parm_out <- parm_out[grep("(Intercept)", parm_out, invert = T)] # remove intercept
+as.data.frame(parm_out)
+```
+
+Fitting the model 
+
+```{fit the model}
+fit <- glm(Outbreak ~ Population_log + Avg_temp + Mean_drought + Basic_handwashing + Poverty_headcount,
+           data = data1, family = binomial)
+```
+
+Calculating BIC 
+```{bic}
+BIC(fit)
+```
+
+Calculating AUC
+```{r libraries}
+library(pROC)
+```
+
+```{auc}
+roc(data$Outbreak,fit$fitted.values,plot = TRUE, print.auc = TRUE)
+```
+
+Marginal effect plots
+
+```{r libraries}
+library(sjPlot)
+library(ggplot2)
+library(ggpubr)
+```
+
+```{plot the marginal effects}
+plot1 <- plot_model(fit, type = "pred", title = "", terms = "Mean_drought") 
++ xlab("Mean Drought")
+plot2 <- plot_model(fit, type = "pred", title = "", terms = "Avg_temp") 
++ xlab("Average Temperature")
+plot3 <- plot_model(fit, type = "pred", title = "", terms = "Population_log") 
++ xlab("Population (log)")
+plot4 <- plot_model(fit, type = "pred", title = "", terms = "Poverty_headcount") 
++ xlab("Poverty Headcount (<$1.90/day)")
+plot5 <- plot_model(fit, type = "pred", title = "", terms = "Basic_handwashing") 
++ xlab("Basic Handwashing (%)")
+```
+
+```{join the plots}
+ggarrange(plot1, plot2, plot3, plot4, plot5, ncol = 2, nrow = 3, labels = c("a","b","c","d","e"))
+```
+
+```{predict using scenario data}
+best_glm <- glm(Outbreak ~ Mean_drought + Population_log + Slum_percent + Poverty_headcount + Avg_temp + Basic_sanitation + Withdrawal_percap, data = data_historical, family = binomial)
+
+predictions_historical <- predict(best_glm, data_historical, type = "response")
+predictions_s1 <- predict(best_glm, data_s1, type = "response")
+predictions_s2 <- predict(best_glm, data_s2, type = "response")
+predictions_s3 <- predict(best_glm, data_s3, type = "response")
+```
