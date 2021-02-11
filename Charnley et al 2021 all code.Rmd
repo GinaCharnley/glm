@@ -146,7 +146,7 @@ as.data.frame(parm_out)
 Fitting the model 
 
 ```{fit the model}
-fit <- glm(Outbreak ~ Population_log + Avg_temp + Mean_drought + Basic_handwashing + Poverty_headcount,
+fit <- glm(Outbreak ~ Mean_drought + withdrawal_percap + Avg_temp + Population_log + Poverty_headcount,
            data = data1, family = binomial)
 ```
 
@@ -181,8 +181,8 @@ plot3 <- plot_model(fit, type = "pred", title = "", terms = "Population_log")
 + xlab("Population (log)")
 plot4 <- plot_model(fit, type = "pred", title = "", terms = "Poverty_headcount") 
 + xlab("Poverty Headcount (<$1.90/day)")
-plot5 <- plot_model(fit, type = "pred", title = "", terms = "Basic_handwashing") 
-+ xlab("Basic Handwashing (%)")
+plot5 <- plot_model(fit, type = "pred", title = "", terms = "withdrawal_percap") 
++ xlab("PerCapita Water Withdrawal")
 ```
 
 ```{join the plots}
@@ -190,8 +190,6 @@ ggarrange(plot1, plot2, plot3, plot4, plot5, ncol = 2, nrow = 3, labels = c("a",
 ```
 
 ```{predict using scenario data}
-best_glm <- glm(Outbreak ~ Mean_drought + Population_log + Slum_percent + Poverty_headcount + Avg_temp + Basic_sanitation + Withdrawal_percap, data = data_historical, family = binomial)
-
 predictions_historical <- predict(best_glm, data_historical, type = "response")
 predictions_s1 <- predict(best_glm, data_s1, type = "response")
 predictions_s2 <- predict(best_glm, data_s2, type = "response")
