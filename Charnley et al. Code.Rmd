@@ -1,0 +1,286 @@
+---
+title: "Exploring the relationships between drought and epidemic cholera in Africa"
+author: "G. Charnley"
+date: "22/10/2020"
+output: pdf_document
+---
+Covariate selection process 
+
+```{r libraries}
+library(dplyr)
+library(magrittr)
+library(corrplot)
+library(ggplot2)
+library(tidyr)
+library(caret)
+library(MASS)
+```
+
+Loading the data `data1` which consists of the outcome variable `Outbreaks` and all the environmental/socioeconomic data.
+
+```{r load_data}
+library(readxl)
+data1 <- read_excel("Multivariate_model_data.xlsx", sheet = "Sheet2")
+# remove missing entries and year/country column
+data1$Year <- NULL
+data1$Code <- NULL
+data1 <- na.omit(data1)
+```
+
+Fetch the list of all covariates.
+
+```{r covar_to_test}
+#get full list of covariates
+covar_to_test <- names(data1)[2:(ncol(data1))] # Starts at 2, to exclude outbreak
+
+as.data.frame(covar_to_test)
+```
+
+Remove covariates that are not significantly associated with the data at p=<0.1, through fitting univariate models and examining the pvalues.
+
+```{r fit_univariate}
+mod <- list()
+pvalues <- rep(NA, length(covar_to_test))
+coeffs <- rep(NA, length(covar_to_test))
+BICs <- rep(NA, length(covar_to_test))
+for(i in 1:length(covar_to_test)){
+  mod[[i]] <- glm( paste0("Outbreak~",covar_to_test[i]), 
+           data = data1, family=binomial(link="cloglog"))
+  
+  pvalues[i] <- coef(summary(mod[[i]]))[,4]
+  coeffs[i] <- coef(summary(mod[[i]]))[,1]
+  BICs[i] <- BIC(mod[[i]])
+}
+df <-  data.frame(covariate = covar_to_test, 
+                        pvalue = pvalues, 
+                        coeff = coeffs,
+                        BIC = BICs) %>% 
+               arrange(-pvalues)
+df
+df %<>% filter(pvalue < 0.1)
+covar_to_test = as.character(df$covariate)
+```
+
+We examine covariates that are highly correlated.
+
+```{r remove_cor, fig.height=12, fig.width=12, fig.cap="Heatmap of parameter correlatons."}
+reduced_dat <-  data1[, covar_to_test]
+reduced_dat_cor <-  cor(reduced_dat)
+heatmap(reduced_dat_cor, keep.dendro = TRUE)
+cor_df <- as.data.frame(reduced_dat_cor) 
+cor_df$param1 <- rownames(cor_df)
+cor_df %<>% gather(param2, correlation, -param1)
+```
+
+\FloatBarrier
+
+Group highly correlated covariates into clusters where the absolute piecewise correlation is above 0.75.
+
+```{r clusters, fig.height=12, fig.width=10}
+x <- as.dist( 1-abs(cor(na.omit(data1[, na.omit(covar_to_test)]))))
+out <- hclust(x)
+df <-  data.frame(param1 = unique(cor_df$param1))
+i = length(covar_to_test)
+pairwise_cor = 1
+while(i >1 & pairwise_cor>0.75){ 
+  i <- i-1
+  
+  y <- cutree(out, k = i)
+  
+  tmp = data.frame(param1 = names(y), as.numeric(y))
+  names(tmp)[2] = paste0("cluster", i)
+  
+  df %<>% left_join(tmp)
+  
+  
+  for(c in unique(y)){
+    cluster_parm = df$param1[df[,paste0("cluster", i)] == c]
+    if(length(cluster_parm)>1){
+      out_cor = cor(as.matrix(data1[, as.character(cluster_parm)]))
+      pairwise_cor = min(min(out_cor[out_cor<1]), pairwise_cor)
+    }
+  }
+  
+}
+# final is i-1
+df_out = df 
+names(df_out)[2] = "cluster"
+df_out %>% arrange(cluster)
+```
+
+Choose those covariates in each cluster that are most correlated with our outcome variable. 
+
+```{r cor with cas}
+df_out %<>% mutate(cor_with_case = NA)
+for(i in 1:nrow(df_out)){
+  df_out$cor_with_case[i] = abs(cor(data1[, c("Outbreak", 
+                                            as.character(df_out$param1[i]))])[1,2])
+}
+df_covar <-  df_out %>% 
+  group_by(cluster) %>% 
+  arrange(-cor_with_case) %>% 
+  summarise(param1 = first(param1))
+covar_to_test = as.character(df_covar$param1)
+covar_to_test
+```
+
+Use the `stepAIC` function from the `MASS` package to step through model possibilities, using BIC as a criteria to assess the inclusion of each model covariate.
+
+```{r stepAIC}
+dat_subs <-  data1[, c("Outbreak" ,covar_to_test)] # subset 
+#use stepAIC to get list of important covariates
+alt_mod <-  MASS::stepAIC(glm("Outbreak~.", data = dat_subs, 
+                            family=binomial(link="cloglog")), 
+                        trace = FALSE,
+                        k = log(nrow(dat_subs))) #turning into BIC
+summary(alt_mod)
+# remove those that are not significant
+pvalues <- coef(summary(alt_mod))[,4]
+parm_out <- names(head(sort(pvalues), 16)) #get the most significant
+parm_out <- parm_out[grep("(Intercept)", parm_out, invert = T)] # remove intercept
+as.data.frame(parm_out)
+```
+
+Fitting the model 
+
+```{fit the model}
+fit <- glm(Outbreak ~ Mean_drought + withdrawal_percap + Avg_temp + Population_log + Poverty_headcount,
+           data = data1, family = binomial)
+```
+
+Calculating BIC 
+
+```{bic}
+BIC(fit)
+```
+
+Calculating AUC
+
+```{r libraries}
+library(pROC)
+```
+
+```{auc}
+roc(data$Outbreak,fit$fitted.values,plot = TRUE, print.auc = TRUE)
+```
+
+Marginal effect plots
+
+```{r libraries}
+library(sjPlot)
+library(ggplot2)
+library(ggpubr)
+```
+
+```{plot the marginal effects}
+plot1 <- plot_model(fit, type = "pred", title = "", terms = "Mean_drought") 
++ xlab("Mean Drought")
+plot2 <- plot_model(fit, type = "pred", title = "", terms = "Avg_temp") 
++ xlab("Average Temperature")
+plot3 <- plot_model(fit, type = "pred", title = "", terms = "Population_log") 
++ xlab("Population (log)")
+plot4 <- plot_model(fit, type = "pred", title = "", terms = "Poverty_headcount") 
++ xlab("Poverty Headcount (<$1.90/day)")
+plot5 <- plot_model(fit, type = "pred", title = "", terms = "withdrawal_percap") 
++ xlab("Water Withdraw (PerCapita)")
+```
+
+```{join the plots}
+ggarrange(plot1, plot2, plot3, plot4, plot5, ncol = 2, nrow = 3, labels = c("a","b","c","d","e"))
+```
+
+Scenario projections and figures 
+
+```{predict using scenario data}
+# Import the scenario data
+data_s1 <- read_excel("~/Library/Mobile Documents/com~apple~Preview/Documents/PhD/Chapter 2 - Drought:Cholera, Africa/Data/Projection/scenario_projections.xlsx", sheet = "Scenario1")
+data_s2 <- read_excel("~/Library/Mobile Documents/com~apple~Preview/Documents/PhD/Chapter 2 - Drought:Cholera, Africa/Data/Projection/scenario_projections.xlsx", sheet = "Scenario2")
+data_s3 <- read_excel("~/Library/Mobile Documents/com~apple~Preview/Documents/PhD/Chapter 2 - Drought:Cholera, Africa/Data/Projection/scenario_projections.xlsx", sheet = "Scenario3")
+predictions_s1 <- predict(best_glm, data_s1, type = "response")
+predictions_s2 <- predict(best_glm, data_s2, type = "response")
+predictions_s3 <- predict(best_glm, data_s3, type = "response")
+```
+
+```{joining predictions to a df and plotting results (Fig.3 & 4)}
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+ISO <- data_s1$ISO
+Year <- data_s1$Year
+outbreak_proj <- as.data.frame(cbind(ISO,Year))
+proj_s1 <- cbind(outbreak_proj, predictions_s1)
+proj_s2 <- cbind(outbreak_proj, predictions_s2)
+proj_s3 <- cbind(outbreak_proj, predictions_s3)
+s1_2030 <- subset(proj_s1, Year == "2030") # this was repeated for the three scenarios for 2030, 2050 and 2070
+world <- st_read("TM_WORLD_BORDERS-0.3.shp", stringsAsFactors = FALSE)
+africa <- subset(world, REGION == "2")
+map_s1_2030 <- merge(africa, s1_2030, by = "ISO3", all.x = TRUE)
+ggplot(map_s1_2030) + geom_sf(aes(fill=s1_2030), lwd = 0) + labs(fill = "Disaster Frequency") + scale_fill_viridis_c(option = "plasma", direction = -1) + theme_void() # repeated for each scenario and year
+Fig.4 <- ggplot(outbreak_proj, aes(y = outbreak_proj, x = Year, fill = Scenario, color = Scenario)) + geom_point() + geom_smooth(se = TRUE) + theme_bw() + labs(y = "Cholera Outbreak Occurance Projections") + scale_color_viridis_d() + scale_fill_viridis_d()
+```
+
+Shapefiles available from: https://thematicmapping.org/downloads/world_borders.php
+License: Creative Commos Attribution-Share Alike (https://creativecommons.org/licenses/by-sa/3.0/), which is free to share and adapt. 
+
+Checking for temporal autocorrelation 
+
+```{diagnostics for temporal autocorrelation}
+library(dplyr)
+library(nlme)
+library(MuMIn)
+library(car)
+library(caret)
+library(boot)
+# create a dataframe with just outbreak and year 
+outbreak <- data_main[c(1,2,3)]
+outbreak <- outbreak %>% group_by(Year) %>% mutate(mean_outbreak = mean(Outbreak))
+outbreak <- outbreak[-c(1,2)]
+outbreak <- outbreak %>% distinct()
+# plot the time series and assess the linear trend 
+plot(outbreak$Year, outbreak$mean_outbreak)
+lm <- lm(mean_outbreak ~ Year, data = outbreak)
+# run diagnostics by looking at the plots 
+par(mfrow=c(2,2))
+plot(lm)
+par(mfrow=c(1,1))
+plot(residuals(lm))
+acf(residuals(lm))
+# create a linear model accounting for autocorrelation 
+lm.ac <- gls(mean_outbreak ~ Year, data = outbreak, correlation = corAR1(form = ~Year), 
+             na.action = na.omit)
+# re-run the diagnostic plots
+plot(fitted(lm.ac),residuals(lm.ac)) + abline(h=0,lty=3)
+integer(0)
+qqnorm(lm.ac)
+acf(residuals(lm.ac,type="p"))
+# compare which is better using AIC
+model.sel(lm, lm.ac)
+
+# test the two best models using LOO
+# specify cross-validation method 
+ctrl <- trainControl(method = "LOOCV")
+# specify the outcome variable as a two level factor 
+data_best$Outbreak <- as.factor(data_best$Outbreak)
+# fit the model using LOO to evaluate performance 
+model <- train(Outbreak ~ Mean_drought + Avg_temp + withdrawal_percap + Population_log + Poverty_headcount, 
+               data = data_best, method = "glm", trControl = ctrl)
+print(model)
+# repeat for the other model
+data_best2$Outbreak <- as.factor(data_best2$Outbreak)
+model2 <- train(Outbreak ~ Mean_drought + Avg_temp + withdrawal_percap + Population_log + Poverty_headcount + Year + Basic_handwashing + HDI, 
+                data = data_best2, method = "glm", trControl = ctrl)
+print(model2)
+# compare accuracy value 
+# assess K-fold cross-validation prediction error 
+cv.mse <- cv.glm(data_best, glm_best) 
+cv.mse2 <- cv.glm(data_best2, glm_best2) 
+cv.mse$delta
+cv.mse2$delta 
+```
+
+
+
+
+
+
